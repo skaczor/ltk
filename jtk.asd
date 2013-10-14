@@ -5,5 +5,6 @@
   :author "Peter Herth, Jason Miller"
   :licence "LGPL"
   :description "JTK"
+  :depends-on (:split-sequence)
   :long-description "Lisp bindings for the Tk toolkit"
   :components ((:file "ltk")))

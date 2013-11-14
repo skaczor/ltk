@@ -2608,7 +2608,7 @@ bind ~a <Configure> [list resetScroll ~a]
 
 (defmethod initialize-instance :after ((item treeitem) &key)
   (setf (name item) (create-name))
-  (format-wish "~a insert ~a end -id ~a ~@[-text ~/esc/~] ~@[-tag ~a~] ~@[-image ~a~] -values ~/ltk::tk-princ/"
+  (format-wish "~a insert ~a end -id ~a ~@[-text ~/ltk::esc/~] ~@[-tag ~a~] ~@[-image ~a~] -values ~/ltk::tk-princ/"
 	       (widget-path (tree item))
 	       (if (master item)
 		   (name (master item))

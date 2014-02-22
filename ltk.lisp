@@ -122,7 +122,6 @@ toplevel             x
 
 (defpackage :ltk
   (:use :common-lisp
-	:split-sequence
         #+(or :cmu :scl) :ext
         #+:sbcl :sb-ext
         )
@@ -498,7 +497,7 @@ toplevel             x
 		 proc
 		 )
     #+:ecl(ext:run-program program args :input :stream :output :stream
-:error :output)
+:error :output :wait wt)
     #+:openmcl (let ((proc (ccl:run-program program args :input
 					    :stream :output :stream :wait wt)))
 		 (unless proc
@@ -2638,10 +2637,16 @@ bind ~a <Configure> [list resetScroll ~a]
 
 (defgeneric children (tree item))
 (defmethod children ((tree treeview) item)
-  (format-wish "~a children ~a" (widget-path tree) item))
+  (format-wish "senddatastrings [~a children ~a]" (widget-path tree) item)
+  (let ((names (read-data))
+        (items (items tree)))
+    (mapcar (lambda (name)
+              (find name items :key #'name :test #'equal))
+            names)))
 
 (defmethod children ((tree treeview) (item treeitem))
-  (format-wish "~a children ~a" (widget-path tree) (name item)))
+  (children tree (name item)))
+  ;(format-wish "~a children ~a" (widget-path tree) (name item)))
 
 (defgeneric (setf children) (val tree item))
 (defmethod (setf children) (val (tree treeview) item)
@@ -5250,7 +5255,7 @@ tk input to terminate"
 		      :background :readonly :alternate :invalid :hover))
     (cerror "Invalid state ~A" state))
   (format-wish "senddatastring [~a state]" (widget-path widget))
-  (let ((states (split-sequence #\ (read-data))))
+  (let ((states (split (read-data) '(#\Space))))
     (member (string-downcase (symbol-name state))
 	    states
 	    :test #'string=)))

@@ -3106,6 +3106,10 @@ set y [winfo y ~a]
   (format-wish "~a delete ~a" (widget-path canvas) (handle item))
   canvas)
 
+(defmethod itemdelete ((canvas canvas) (item symbol))
+  (format-wish "~a delete ~a" (widget-path canvas) item)
+  canvas)
+
 (defgeneric move (item dx dy))
 (defmethod move ((item canvas-item) dx dy)
   (itemmove (canvas item) (handle item) (tk-number dx) (tk-number dy)))

@@ -3620,9 +3620,11 @@ set y [winfo y ~a]
 
 (defmethod itemconfigure ((widget canvas) item option value)
   (format-wish "~A itemconfigure ~A -~(~A~) {~A}" (widget-path widget) item option
-	    (if (stringp value) ;; There may be values that need to be passed as
-		value           ;; unmodified strings, so do not downcase strings
-	      (format nil "~(~a~)" value))) ;; if its not a string, print it downcased
+	       (typecase value
+		 (string value)         ; There may be values that need to be passed as
+					; unmodified strings, so do not downcase strings
+		 (list (format nil "~{~A~^ ~}" value)) ; lists must not be downcased but stripped from ()
+		 (otherwise (format nil "~(~a~)" value)))) ; if it's not a string, print it downcased
   widget)
 
 

@@ -244,9 +244,11 @@ toplevel             x
            #:input-box
            #:insert-object
            #:interior
+	   #:gettags
            #:itembind
            #:itemconfigure
            #:itemdelete
+	   #:itemfind
            #:itemmove
            #:itemlower
            #:itemraise
@@ -3113,6 +3115,17 @@ set y [winfo y ~a]
 (defgeneric move (item dx dy))
 (defmethod move ((item canvas-item) dx dy)
   (itemmove (canvas item) (handle item) (tk-number dx) (tk-number dy)))
+
+(defgeneric gettags (canvas item))
+(defmethod gettags ((canvas canvas) (item integer))
+  (format-wish "senddata [~a gettags ~a]" (widget-path canvas) item)
+  (read-data))
+
+(defgeneric itemfind (canvas search-command &rest args))
+(defmethod itemfind ((canvas canvas) search-command &rest args)
+  (format-wish "senddata [~a find ~(~a~) ~{~a~^ ~}]" (widget-path canvas) search-command args)
+  (read-data))
+
 
 (defgeneric clear (widget))
 (defmethod clear ((canvas canvas))

@@ -427,7 +427,9 @@ toplevel             x
            #:treeview-identify-item
            #:treeview-set-selection
            #:items
-           #:image))
+           #:image
+	   #:esc
+	   #:ttk-state))
 
 (defpackage :ltk-user
   (:use :common-lisp :ltk))
@@ -497,7 +499,7 @@ toplevel             x
 		 proc
 		 )
     #+:ecl(ext:run-program program args :input :stream :output :stream
-:error :output)
+:error :output :wait wt)
     #+:openmcl (let ((proc (ccl:run-program program args :input
 					    :stream :output :stream :wait wt)))
 		 (unless proc
@@ -527,8 +529,7 @@ toplevel             x
   (input-handler nil)
   (remotep nil)
   (output-buffer nil)
-  (variables (make-hash-table :test #'equal))
-  )
+  (variables (make-hash-table :test #'equal)))
 
 (defmethod wish-variable (name (wish ltk-connection))
   (gethash name (wish-variables wish)))
@@ -901,21 +902,6 @@ fconfigure stdout -encoding utf-8
           
           (finish-output stream)
 
-          #+nil(loop for string in buffer
-                     do (loop with end = (length string)
-                              with start = 0
-                              for amount = (min 1024 (- end start))
-                              while (< start end)
-                              do (let ((string (subseq string start (+ start amount))))
-                                   (format stream "buffer_text {~A}~%" string)
-                                   (dbg "buffer_text {~A}~%" string)
-                                   (incf start amount)))
-                        (format stream "buffer_text \"\\n\"~%")
-                        (dbg "buffer_text \"\\n\"~%")
-                     finally (progn (format stream "process_buffer~%")
-                                    (dbg "process_buffer~%")
-                                    (finish-output stream)))
-
           (setf (wish-output-buffer *wish*) nil))))))
   
 (defun handle-dead-stream (err stream)
@@ -929,26 +915,6 @@ fconfigure stdout -encoding utf-8
   "format 'args using 'control as control string to wish"
   (send-wish (apply #'format nil control args)))
   
-
-#+nil
-(defmacro format-wish (control &rest args)
-  "format 'args using 'control as control string to wish"
-  (let ((stream (gensym)))
-    `(progn
-       (when *debug-tk*
-         (format *trace-output* ,control ,@args)
-         (format *trace-output* "~%")
-         (finish-output))
-       (let ((*print-pretty* nil)
-             (,stream (wish-stream *wish*)))
-         (declare (type stream ,stream)
-                  (optimize (speed 3)))
-         
-         (format ,stream ,control ,@args)
-         (format ,stream "~%")
-         (finish-output ,stream))
-       nil)))
-
 
 
 ;; differences:
@@ -1117,8 +1083,35 @@ event to read and blocking is set to nil"
   (make-array (length string) :element-type 'character
               :initial-contents string :adjustable t :fill-pointer t))
 
+;; This works by the following algorithm:
+;; 1) Replace all backslaskes with \x5c
+;; 2) Replace all { with \{
+;; 3) Replace all } with #\}
+;; 4) Generate a tcl command that performs backslash substitution on it
+(defun esc (stream string &rest modifiers)
+  "Creates a tcl command-substitution that will fully reproduce the
+    lisp string"
+  (declare (ignore modifiers))
+  (when (not (stringp string))
+    (setf string (format nil "~a" string)))
+  (progn
+    (write-string "[subst -nocommands -novariables {" stream)
+    (loop for char across string
+       do (case char
+	    (#\\
+	     (write-string "\\x5c" stream))
+	    ((#\{ #\})
+	     (write-char #\\ stream)
+	     (write-char char stream))
+	    (t (write-char char stream))))
+      (write-string "} ]" stream)))
+
+(defun tkescape3 (text)
+  (format nil "~/ltk:esc/" text))
+
 ;; Much faster version. For one test run it takes 2 seconds, where the
 ;; other implementation requires 38 minutes.
+  
 (defun tkescape (text)
   (unless (stringp text)
     (setf text (format nil "~a" text)))
@@ -1138,22 +1131,6 @@ event to read and blocking is set to nil"
          (vector-push-extend #\\ result))
        (vector-push-extend c result)
      finally (return result)))
-
-;;; sanitizing strings: lisp -> tcl (format (wish-stream *wish*) "{~a}" string)
-;;; in string escaped : {} mit \{ bzw \}  und \ mit \\
-
-(defun brace-tkescape (text)
-  text)
-#|
-  (unless (stringp text)
-    (setf text (format nil "~a" text)))
-  (loop with result = (make-adjustable-string)
-     for c across text do
-       (when (member c '(#\\ #\{ #\}))
-         (vector-push-extend #\\ result))
-       (vector-push-extend c result)
-     finally (return result)))
-  |#
 
 ;; basic tk object
 (defclass tkobject ()
@@ -1255,29 +1232,10 @@ can be passed to AFTER-CANCEL"
 (defun get-counter()
   "incremental counter to create unique numbers"
   (incf (wish-counter *wish*)))
-
-#+nil(defun create-name ()
-  "create unique widget name, append unique number to 'w'"
-  (format nil "w~A" (get-counter)))
-
-
-(defun encode-base-52 (value)
-  (let ((numerals "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
-        (result ""))
-    (loop
-       while (> value 0)
-       do
-      (multiple-value-bind (mul rest) (truncate value 52)
-        (setf result (format nil "~a~a" result (elt numerals rest)))
-        (setf value mul)))
-    result))
-    
   
 (defun create-name ()
-  "create unique widget name, append unique number to 'w'"
-  (format nil "w~A" (encode-base-52 (get-counter))))
-
-
+  "create unique widget name, append unique number to 'ltk'"
+  (format nil "ltk~36R" (get-counter)))
 
 
 (defun create-path (master name)
@@ -1399,7 +1357,7 @@ can be passed to AFTER-CANCEL"
       (disabledforeground disabledforeground "~@[ -disabledforeground ~(~a~)~]" disabledforeground "")
       (elementborderwidth elementborderwidth "~@[ -elementborderwidth ~(~a~)~]" elementborderwidth "")
       (exportselection exportselection "~@[ -exportselection ~(~a~)~]" exportselection "")
-      (font font "~@[ -font {~a}~]" font "font to use to display text on the widget")
+      (font font "~@[ -font ~/ltk:esc/~]" font "font to use to display text on the widget")
       (foreground foreground "~@[ -foreground ~(~a~)~]" foreground "foreground color of the widget")
       (format format "~@[ -format ~(~a~)~]" format "")
       (from from "~@[ -from ~(~a~)~]" from "")
@@ -1502,7 +1460,7 @@ can be passed to AFTER-CANCEL"
       (value value "~@[ -value ~(~a~)~]" value "")
       (value-radio-button nil "~@[ -value ~(~a~)~]" (radio-button-value widget)
        "value for the radio button group to take, when the button is selected")
-      (values values "~@[ -values {~{{~a}~^ ~}}~]" values "")
+      (values values "~@[ -values [list ~{~/ltk:esc/~^ ~}]~]" values "")
       (variable variable "~@[ -variable ~(~a~)~]" variable "name of the variable associated with the widget")
       (variable-radio-button nil "~@[ -variable ~(~a~)~]" (radio-button-variable widget)
        "name of the radio button group the button shall belong to as a string")
@@ -1550,15 +1508,6 @@ can be passed to AFTER-CANCEL"
       args
       ))
   )
-
-#+nil(defmacro defargs (class parents &rest defs)
-  (let ((args (build-args class parents defs)))
-    (setf *class-args* (append (remove-if (lambda (entry)
-					     (equal (car entry) class))
-					   *class-args*)))
-    `(setf *class-args* (append (remove-if (lambda (entry)
-					     (equal (car entry) ',class))
-					   *class-args*) (list '(,class ,@args))))))
 
 (defmacro defargs (class parents &rest defs)
   (let ((args (build-args class parents defs)))
@@ -1800,7 +1749,7 @@ can be passed to AFTER-CANCEL"
   (read-data))
 
 (defun clipboard-append (txt)
-  (format-wish "clipboard append {~a}" txt))
+  (format-wish "clipboard append ~/ltk:esc/" txt))
 
 ;; around - initializer
 
@@ -1926,7 +1875,7 @@ can be passed to AFTER-CANCEL"
 
 (defgeneric (setf value) (widget val))
 (defmethod (setf value) (val (v tkvariable))
-  (format-wish "global ~a; set ~a {~a}" (name v) (name v) val)
+  (format-wish "global ~a; set ~a ~/ltk:esc/" (name v) (name v) val)
   val)
 
 (defclass tktextvariable ()
@@ -1977,7 +1926,7 @@ can be passed to AFTER-CANCEL"
     (setf (slot-value m 'widget-path) (create-path (master m) (name m))))
   (format-wish "menu ~A -tearoff ~a" (widget-path m) tearoff)
   (when (master m)
-    (format-wish "~A add cascade -label {~A} -menu ~a~@[ -underline ~a ~]"
+    (format-wish "~A add cascade -label ~/ltk:esc/ -menu ~a~@[ -underline ~a ~]"
                  (widget-path (master m)) (text m) (widget-path m) underline)))
 
 (defun make-menu(menu text &key underline name (tearoff 0))
@@ -1991,11 +1940,11 @@ can be passed to AFTER-CANCEL"
 
 (defgeneric state (menu menu-label state))
 (defmethod state ((a menu) menu-label state)
-  (format-wish "~a entryconfigure {~a} -state {~a}" (widget-path a) menu-label state))
+  (format-wish "~a entryconfigure ~/ltk:esc/ -state ~/ltk:esc/" (widget-path a) menu-label state))
 
 (defgeneric menu-label (menu old new))
 (defmethod menu-label ((a menu) old new)
-  (format-wish "~a entryconfigure {~a} -label {~a}"  (widget-path a)  old new))
+  (format-wish "~a entryconfigure ~/ltk:esc/ -label ~/ltk:esc/"  (widget-path a)  old new))
 
 ;;; menu button
 
@@ -2010,7 +1959,7 @@ methods, e.g. 'configure'."))
 (defmethod initialize-instance :after ((m menubutton) &key command underline accelerator state)
   (when command
     (add-callback (name m) command))
-  (format-wish "~A add command -label {~A}  -command {callback ~A}~@[ -underline ~a ~]~@[ -accelerator {~a} ~]~@[ -state ~(~a~)~]"
+  (format-wish "~A add command -label ~/ltk:esc/  -command {callback ~A}~@[ -underline ~a ~]~@[ -accelerator ~/ltk:esc/ ~]~@[ -state ~(~a~)~]"
                (widget-path (master m)) (text m) (name m) underline accelerator state))
 
 (defun make-menubutton(menu text command &key underline accelerator state)
@@ -2024,7 +1973,7 @@ methods, e.g. 'configure'."))
 (defmethod initialize-instance :after ((m menucheckbutton) &key)
   (when (command m)
     (add-callback (name m) (command m)))
-  (format-wish "~A add checkbutton -label {~A} -variable ~a ~@[ -command {callback ~a}~]"
+  (format-wish "~A add checkbutton -label ~/ltk:esc/ -variable ~a ~@[ -command {callback ~a}~]"
 	       (widget-path (master m)) (text m) (name m) (and (command m) (name m))))
 
 (defmethod value ((cb menucheckbutton))
@@ -2045,7 +1994,7 @@ methods, e.g. 'configure'."))
   (unless (group m)
     (setf (group m)
 	  (name m)))
-  (format-wish "~A add radiobutton -label {~A} -value ~a -variable ~a ~@[ -command {callback ~a}~]"
+  (format-wish "~A add radiobutton -label ~/ltk:esc/ -value ~a -variable ~a ~@[ -command {callback ~a}~]"
                (widget-path (master m)) (text m) (name m) (group m)
                (and (command m) (name m))))
 
@@ -2109,7 +2058,7 @@ methods, e.g. 'configure'."))
             (equal val 0))
     (warn "Use of 1 and 0 for check-button values is deprecated, use T or NIL. Treating ~A as t"
           val))
-  (format-wish "global ~a; set ~a {~a}" (name v) (name v) (if val 1 0))
+  (format-wish "global ~a; set ~a ~/ltk:esc/" (name v) (name v) (if val 1 0))
   val)
 
 ;;; radio button widget
@@ -2155,7 +2104,7 @@ methods, e.g. 'configure'."))
 
 #-:tk84
 (defmethod (setf options) (values (combobox combobox))
-  (format-wish "~a configure -values {~{ \{~a\}~}}" (widget-path combobox) values))
+  (format-wish "~a configure -values [list ~{~/ltk:esc/ ~}]" (widget-path combobox) values))
 
 
 ;; text entry widget
@@ -2215,7 +2164,7 @@ methods, e.g. 'configure'."))
 (defwrapper labelframe (widget) () "ttk::labelframe")
 
 (defmethod (setf text) :after (val (l labelframe))
-  (format-wish "~a configure -text {~a}" (widget-path l) val)
+  (format-wish "~a configure -text ~/ltk:esc/" (widget-path l) val)
   val)
 
 ;;; panedwindow widget
@@ -2290,8 +2239,8 @@ methods, e.g. 'configure'."))
 (defmethod listbox-append ((l listbox) values)
   "append values (which may be a list) to the list box"
   (if (listp values)
-      (format-wish "~a insert end ~{ \{~a\}~}" (widget-path l) values)
-      (format-wish "~a insert end \{~a\}" (widget-path l) values))
+      (format-wish "~a insert end ~{ ~/ltk:esc/~}" (widget-path l) values)
+      (format-wish "~a insert end ~/ltk:esc/" (widget-path l) values))
   l)
 
 (defgeneric listbox-get-selection (l))
@@ -2324,8 +2273,8 @@ a list of numbers may be given"
 (defgeneric listbox-insert (l index values))
 (defmethod listbox-insert ((l listbox) index values)
   (if (listp values)
-      (format-wish "~a insert ~a ~{ \{~a\}~}" (widget-path l) index values)
-      (format-wish "~a insert ~a \{~a\}" (widget-path l) index values))
+      (format-wish "~a insert ~a ~{ ~/ltk:esc/~}" (widget-path l) index values)
+      (format-wish "~a insert ~a ~/ltk:esc/" (widget-path l) index values))
   l)
 
 (defgeneric listbox-configure (l i &rest options))
@@ -2379,11 +2328,11 @@ a list of numbers may be given"
 
 (defgeneric notebook-add (nb widget &rest options))
 (defmethod notebook-add ((nb notebook) (w widget) &rest options)
-  (format-wish "~a add ~a ~{-~(~a~) {~a}~}" (widget-path nb) (widget-path w) options))
+  (format-wish "~a add ~a ~{-~(~a~) ~/ltk:esc/~}" (widget-path nb) (widget-path w) options))
 
 (defgeneric notebook-tab (nb widget option value))
 (defmethod notebook-tab ((nb notebook) (w widget) option value)
-  (format-wish "~a tab ~a -~(~a~) {~a}" (widget-path nb)
+  (format-wish "~a tab ~a -~(~a~) ~/ltk:esc/" (widget-path nb)
 	       (widget-path w) option value))
 
 (defgeneric notebook-forget (nb widget))
@@ -2497,6 +2446,14 @@ a list of numbers may be given"
   (add-callback (name sp) val)					
   (format-wish "~a configure -command {callbackstring ~a %s}" (widget-path sp) (name sp))
   val)
+
+(defmethod value ((w spinbox))
+  (format-wish "senddatastring [~a get]" (widget-path w))
+  (ltk::read-data))
+  
+(defmethod (setf value) (v (w spinbox))
+  (format-wish "~a set ~/ltk:esc/" (widget-path w)
+	       (princ-to-string v)))
 
 ;;; toplevel (window) widget 
 
@@ -2622,74 +2579,6 @@ bind ~a <Configure> [list resetScroll ~a]
     ))
 
 
-#+nil
-(defclass scrolled-frame (frame)
-  ((inner :accessor interior)
-   (displayframe :accessor scrolled-frame-display)
-   (hscroll :accessor hscroll)
-   (vscroll :accessor vscroll)
-   ))
-
-#+nil
-(defmethod initialize-instance :after ((sf scrolled-frame) &key background)
-  (let ((f (make-instance 'frame :master sf :background background)))
-    (setf (scrolled-frame-display sf) f)
-    (setf (interior sf) (make-instance 'frame :master f :background background))
-    (setf (hscroll sf) (make-instance 'scrollbar :master sf :orientation "horizontal"))
-    (setf (vscroll sf) (make-instance 'scrollbar :master sf :orientation "vertical"))
-    (grid f 0 0 :sticky "news")
-    (grid (hscroll sf) 1 0 :sticky "we")
-    (grid (vscroll sf) 0 1 :sticky "ns")
-    (grid-columnconfigure sf 0 "weight" 1)
-    (grid-columnconfigure sf 1 "weight" 0)
-    (grid-rowconfigure sf 0 "weight" 1)
-    (grid-rowconfigure sf 1 "weight" 0)
-    
-    (place (interior sf) 0 0)
-    (send-wish (format nil "~a set  0.1 0.5" (widget-path (hscroll sf))))
-    (send-wish (format nil "~a set  0.1 0.5" (widget-path (vscroll sf))))
-    (send-wish (format nil "~a configure -command ~axv" (widget-path (hscroll sf)) (name sf)))
-    (send-wish (format nil "~a configure -command ~ayv" (widget-path (vscroll sf)) (name sf)))
-    (send-wish (format nil "
-proc ~axv {{com moveto} {val 0} {unit 0}} {
-
-set x [winfo x ~a]
-set y [winfo y ~a]
-set wx [winfo width ~a]
-set w [winfo width ~a]
-
-if {$val < 0} {set val 0}
-if {$val > [expr 1.0*($wx-$w)/$wx]} {set val  [expr 1.0*($wx-$w)/$wx]}
-if {$wx<$w} { set val 0 }
-place ~a -x [expr -($val * $wx)] -y $y
-set x [winfo x ~a]
-~a set [expr -1.0*$x/$wx] [expr 1.0*($w-$x)/$wx]
-}
-proc ~ayv {{com moveto} {val 0} {unit 0}} {
-set x [winfo x ~a]
-set y [winfo y ~a]
-set wy [winfo height ~a]
-set h [winfo height ~a]
-if {$val < 0} {set val 0}
-if {$val > [expr 1.0*($wy-$h)/$wy]} {set val  [expr 1.0*($wy-$h)/$wy]}
-if {$wy<$h} { set val 0 }
-place ~a -x $x -y [expr -($val * $wy)]
-set y [winfo y ~a]
-~a set [expr -1.0*$y/$wy] [expr 1.0*($h-$y)/$wy]
-}
-
-" (name sf)
-  (widget-path (interior sf)) (widget-path (interior sf)) (widget-path (interior sf))
-  (widget-path f)  (widget-path (interior sf))  (widget-path (interior sf))		   
-  (widget-path (hscroll sf))
-  (name sf)   (widget-path (interior sf))  (widget-path (interior sf))
-  (widget-path (interior sf))  (widget-path f)  (widget-path (interior sf))
-  (widget-path (interior sf))    (widget-path (vscroll sf))
-  ))
-    (format-wish "bind ~a <Configure> {ltkdebug \"~a configure\";~axv configure;~ayv configure}" (widget-path sf) (name sf)(name sf)(name sf))
-    (format-wish "bind ~a <Configure> {ltkdebug \"~a iconfigure\";~axv configure;~ayv configure}" (widget-path (interior sf)) (name sf)(name sf)(name sf))
-    ))
-
 ;;; separator widget
 
 #-:tk84
@@ -2711,8 +2600,8 @@ set y [winfo y ~a]
 
 (defclass treeitem (tkobject)
   ((tree :accessor tree :initform nil :initarg :tree)
-   (text :accessor text :initform nil :initarg :text)
-   (image :accessor image :initform nil :initarg :image)
+   (text :accessor %text :initform nil :initarg :text)
+   (image :accessor %image :initform nil :initarg :image)
    (master :accessor master :initarg :master :initform nil)
    (tag    :accessor tag    :initform nil :initarg :tag)
    (column-values :accessor column-values :initform nil :initarg :column-values)
@@ -2720,21 +2609,28 @@ set y [winfo y ~a]
 
 (defmethod initialize-instance :after ((item treeitem) &key)
   (setf (name item) (create-name))
-  (format-wish "~a insert ~a end -id ~a -text \"~a\" ~@[-tag ~a~] ~@[-image ~a~]" (widget-path (tree item)) (if (master item)
-                                                                                    (name (master item))
-                                                                                    "{}")
-               (name item) (tkescape (text item)) (tag item) (and (image item) (if (stringp (image item))
-                                                                        (image item)
-                                                                        (name (image item)))))
+  (format-wish "~a insert ~a end -id ~a ~@[-text ~/ltk::esc/~] ~@[-tag ~a~] ~@[-image ~a~] -values ~/ltk::tk-princ/"
+	       (widget-path (tree item))
+	       (if (master item)
+		   (name (master item))
+		   "{}")
+               (name item)
+	       (%text item)
+	       (tag item)
+	       (and (%image item)
+		    (if (stringp (%image item))
+			(%image item)
+			(name (%image item))))
+	       (column-values item))
   (push item (items (tree item)))
   item)
 
 (defmethod (setf text) (val (item treeitem))
-  (format-wish "~a item ~a -text {~A}" (widget-path (tree item)) (name item) val)
+  (format-wish "~a item ~a -text ~/ltk:esc/" (widget-path (tree item)) (name item) val)
   val)
 
 (defmethod (setf image) (val (item treeitem))
-  (format-wish "~a item ~a -image {~A}" (widget-path (tree item)) (name item) val)
+  (format-wish "~a item ~a -image ~/ltk:esc/" (widget-path (tree item)) (name item) val)
   val)
 
 (defmethod see ((tv treeview) (item treeitem))
@@ -2743,10 +2639,16 @@ set y [winfo y ~a]
 
 (defgeneric children (tree item))
 (defmethod children ((tree treeview) item)
-  (format-wish "~a children ~a" (widget-path tree) item))
+  (format-wish "senddatastrings [~a children ~a]" (widget-path tree) item)
+  (let ((names (read-data))
+        (items (items tree)))
+    (mapcar (lambda (name)
+              (find name items :key #'name :test #'equal))
+            names)))
 
 (defmethod children ((tree treeview) (item treeitem))
-  (format-wish "~a children ~a" (widget-path tree) (name item)))
+  (children tree (name item)))
+  ;(format-wish "~a children ~a" (widget-path tree) (name item)))
 
 (defgeneric (setf children) (val tree item))
 (defmethod (setf children) (val (tree treeview) item)
@@ -2757,16 +2659,16 @@ set y [winfo y ~a]
 
 (defgeneric column-configure (tree column option value &rest rest))
 (defmethod column-configure ((tree treeview) column option value &rest rest)
-  (format-wish "~a column ~a -~(~a~) {~a}~{ -~(~a~) {~(~a~)}~}" (widget-path tree) column
+  (format-wish "~a column ~a -~(~a~) ~/ltk:esc/~{ -~(~a~) {~(~a~)}~}" (widget-path tree) column
 	       option value rest))
 
 (defgeneric treeview-delete (tree items))
 (defmethod treeview-delete ((tree treeview) item)
-  (format-wish "~a delete {~a}" (widget-path tree) item))
+  (format-wish "~a delete ~/ltk:esc/" (widget-path tree) item))
 
 (defmethod treeview-delete ((tree treeview) (item treeitem))
   (setf (items tree) (remove item (items tree)))
-  (format-wish "~a delete {~a}" (widget-path tree) (name item)))
+  (format-wish "~a delete ~/ltk:esc/" (widget-path tree) (name item)))
 
 (defmethod treeview-delete ((tree treeview) (items cons))
    (format-wish "~a delete {~{~a~^ ~}}" (widget-path tree) items))
@@ -2819,9 +2721,9 @@ set y [winfo y ~a]
                   (string= arg "")))
          (format stream "{}"))
         ((listp arg)
-         (format stream "{~{~/ltk::tk-princ/~^ ~}}" (mapcar #'tkescape arg)))
+         (format stream "[list ~{~/ltk::tk-princ/~^ ~}]" arg))
         (t
-         (format stream "~a" (tkescape arg)))))
+         (format stream "~/ltk:esc/" arg))))
 
 (defun treeview-insert (tree &rest options
                         &key (parent "{}") (index "end") (id (create-name)) &allow-other-keys)
@@ -2900,7 +2802,7 @@ set y [winfo y ~a]
 
 (defgeneric treeview-set-selection (w items))
 (defmethod treeview-set-selection ((tv treeview) items)
-  (format-wish "~a selection set {~{~a ~}}" (widget-path tv) (mapcar #'name items)))
+  (format-wish "~a selection set [list ~{~/ltk:esc/ ~}]" (widget-path tv) (mapcar #'name items)))
 
 
 
@@ -3065,7 +2967,7 @@ set y [winfo y ~a]
 
 (defmethod tcl-bind ((w canvas-item) event code &key append exclusive)
   (declare (ignore append exclusive))
-  (format-wish "~a bind ~a ~a {~a}"
+  (format-wish "~a bind ~a ~a ~/ltk:esc/"
                (widget-path (canvas w)) (handle w) event code))
   
 
@@ -3127,7 +3029,6 @@ set y [winfo y ~a]
   (read-data))
 
 
-(defgeneric clear (widget))
 (defmethod clear ((canvas canvas))
   "delete all items within a canvas"
   (format-wish "~a delete all" (widget-path canvas))
@@ -3246,12 +3147,12 @@ set y [winfo y ~a]
          (args))
 
         ((eq itemtype :text)
-         (format stream "~a create text ~a ~a -anchor nw -text {~a} "
+         (format stream "~a create text ~a ~a -anchor nw -text ~/ltk:esc/ "
                  cpath (number) (number) (tkescape (arg)))
          (args))
       
         ((eq itemtype :ctext)
-         (format stream "~a create text ~a ~a -anchor n -text {~a} "
+         (format stream "~a create text ~a ~a -anchor n -text ~/ltk:esc/ "
                  cpath (number) (number) (tkescape (arg)))
          (args))
         ))))
@@ -3285,7 +3186,7 @@ set y [winfo y ~a]
              (make-instance class :canvas canvas :handle handle))))))
 
 (defun create-text (canvas x y text)
-  (format-wish "senddata [~a create text ~a ~a -anchor nw -text {~a}]" (widget-path canvas)
+  (format-wish "senddata [~a create text ~a ~a -anchor nw -text ~/ltk:esc/]" (widget-path canvas)
                (tk-number x) (tk-number y)
                text)
   (read-data))
@@ -3427,13 +3328,13 @@ set y [winfo y ~a]
   (read-data))
 
 (defmethod (setf text) (val (text text))
-  (format-wish "~A delete 0.0 end;~A insert end {~A}" (widget-path text) (widget-path text) val)
+  (format-wish "~A delete 0.0 end;~A insert end ~/ltk:esc/" (widget-path text) (widget-path text) val)
   val)
 
 (defgeneric save-text (txt filename))
 (defmethod save-text ((txt text) filename)
   "save the content of the text widget into the file <filename>"
-  (format-wish "set file [open {~a} \"w\"];puts $file [~a get 1.0 end];close $file;puts \"asdf\"" filename (widget-path txt))
+  (format-wish "set file [open ~/ltk:esc/ \"w\"];puts $file [~a get 1.0 end];close $file;puts \"asdf\"" filename (widget-path txt))
   (read-line (wish-stream *wish*))
   txt)
 
@@ -3441,7 +3342,7 @@ set y [winfo y ~a]
 (defmethod load-text((txt text) filename)
   "load the content of the file <filename>"
 ;  (format-wish "set file [open {~a} \"r\"];~a delete 1.0 end;~a insert end [read $file];close $file;puts \"asdf\"" filename (widget-path txt) (widget-path txt))
-  (format-wish "set file [open {~a} \"r\"];~a delete 1.0 end;~a insert end [read $file];close $file;puts \"(:DATA asdf)\"" filename (widget-path txt) (widget-path txt))
+  (format-wish "set file [open ~/ltk:esc/ \"r\"];~a delete 1.0 end;~a insert end [read $file];close $file;puts \"(:DATA asdf)\"" filename (widget-path txt) (widget-path txt))
   (read-data))
 
 ;;; photo image object
@@ -3469,7 +3370,7 @@ set y [winfo y ~a]
 (defgeneric image-load (p filename))
 (defmethod image-load((p photo-image) filename)
   ;(format t "loading file ~a~&" filename)
-  (send-wish (format nil "~A read {~A} -shrink" (name p) filename))
+  (send-wish (format nil "~A read ~/ltk:esc/ -shrink" (name p) filename))
   p)
 
 (defgeneric ishow (p name))
@@ -3548,17 +3449,17 @@ set y [winfo y ~a]
 
 (defgeneric grid-columnconfigure (widget c o v))
 (defmethod grid-columnconfigure (widget column option value)
-  (format-wish "grid columnconfigure ~a ~a -~(~a~) {~a}" (widget-path widget) column option value)
+  (format-wish "grid columnconfigure ~a ~a -~(~a~) ~/ltk:esc/" (widget-path widget) column option value)
   widget)
 
 (defgeneric grid-rowconfigure (widget r o v))
 (defmethod grid-rowconfigure (widget row option value)
-  (format-wish "grid rowconfigure ~a ~a -~(~a~) {~a}" (widget-path widget) row option value)
+  (format-wish "grid rowconfigure ~a ~a -~(~a~) ~/ltk:esc/" (widget-path widget) row option value)
   widget)
 
 (defgeneric grid-configure (widget o v))
 (defmethod grid-configure (widget option value)
-  (format-wish "grid configure ~a -~(~a~) {~a}" (widget-path widget) option value)
+  (format-wish "grid configure ~a -~(~a~) ~/ltk:esc/" (widget-path widget) option value)
   widget)
 
 (defgeneric grid-forget (widget))
@@ -3585,7 +3486,7 @@ set y [winfo y ~a]
 
 (defmethod configure ((item menuentry) option value &rest others)
   (let ((path (widget-path (master item))))
-    (format-wish "~A entryconfigure [~A index {~A}]~{ -~(~a~) {~/ltk::down/}~}"
+    (format-wish "~A entryconfigure [~A index ~/ltk:esc/]~{ -~(~a~) {~/ltk::down/}~}"
                  path
                  path
                  (text item)
@@ -3608,7 +3509,7 @@ set y [winfo y ~a]
 
 ;;; for tkobjects, the name of the widget is taken
 (defmethod configure (widget option (value tkobject) &rest others)
-  (format-wish "~A configure -~(~A~) {~A} ~{ -~(~a~) {~(~a~)}~}" (widget-path widget) option (widget-path value) others)
+  (format-wish "~A configure -~(~A~) ~/ltk:esc/ ~{ -~(~a~) {~(~a~)}~}" (widget-path widget) option (widget-path value) others)
   widget)
 
 (defgeneric cget (widget option))
@@ -3636,7 +3537,7 @@ set y [winfo y ~a]
 (defgeneric itemconfigure (widget item option value))
 
 (defmethod itemconfigure ((widget canvas) item option value)
-  (format-wish "~A itemconfigure ~A -~(~A~) {~A}" (widget-path widget) item option
+  (format-wish "~A itemconfigure ~A -~(~A~) ~/ltk:esc/" (widget-path widget) item option
 	       (typecase value
 		 (string value)         ; There may be values that need to be passed as
 					; unmodified strings, so do not downcase strings
@@ -3647,7 +3548,7 @@ set y [winfo y ~a]
 
 ;;; for tkobjects, the name of the widget is taken
 (defmethod itemconfigure ((widget canvas) item option (value tkobject))
-  (format-wish "~A itemconfigure ~A -~(~A~) {~A}" (widget-path widget) item option (widget-path value))
+  (format-wish "~A itemconfigure ~A -~(~A~) ~/ltk:esc/" (widget-path widget) item option (widget-path value))
   widget)
 
 (defgeneric itemlower (w i &optional below))
@@ -3726,7 +3627,7 @@ set y [winfo y ~a]
 
 (defgeneric wm-title (widget title))
 (defmethod wm-title ((w widget) title)
-  (format-wish "wm title ~a {~a}" (widget-path w) title)
+  (format-wish "wm title ~a ~/ltk:esc/" (widget-path w) title)
   w)
 
 #-:tk84
@@ -3956,7 +3857,7 @@ set y [winfo y ~a]
 ;;; Dialog functions
 
 (defun choose-color (&key parent title initialcolor )
-  (format-wish "senddatastring [tk_chooseColor ~@[ -parent ~A~]~@[ -title {~A}~]~@[ -initialcolor {~A}~]]" (when parent (widget-path parent)) title initialcolor)
+  (format-wish "senddatastring [tk_chooseColor ~@[ -parent ~A~]~@[ -title ~/ltk:esc/~]~@[ -initialcolor ~/ltk:esc/~]]" (when parent (widget-path parent)) title initialcolor)
   (read-data))
 
 (defun get-open-file (&key (filetypes '(("All Files" "*")))
@@ -3964,21 +3865,21 @@ set y [winfo y ~a]
 			   multiple parent title)
   (let ((files
         (with-output-to-string (s)
-          (format s "{")
+          (format s "[list ")
           (dolist (type filetypes)
             (let ((name (first type))
                   (wildcard (second type)))
-              (format s "{{~a} {~a}} " name wildcard)))
-          (format s "}"))))
+              (format s "[list ~/ltk:esc/ ~/ltk:esc/ ] " name wildcard)))
+          (format s " ]"))))
     (if multiple
 	(format-wish "senddatastrings [tk_getOpenFile ~
-                      -filetypes ~a ~@[ -initialdir {~a}~] -multiple 1 ~
-                      ~@[ -parent ~a~] ~@[ -title {~a}~]]"
+                      -filetypes ~a ~@[ -initialdir ~/ltk:esc/~] -multiple 1 ~
+                      ~@[ -parent ~a~] ~@[ -title ~/ltk:esc/~]]"
 		      files initialdir 
 		      (and parent (widget-path parent)) title)
 	(format-wish "senddatastring [tk_getOpenFile ~
-                      -filetypes ~a ~@[ -initialdir {~a}~]  ~
-                      ~@[ -parent ~a~] ~@[ -title {~a}~]]"
+                      -filetypes ~a ~@[ -initialdir ~/ltk:esc/~]  ~
+                      ~@[ -parent ~a~] ~@[ -title ~/ltk:esc/~]]"
 		      files initialdir 
 		      (and parent (widget-path parent)) title))
     (read-data)))
@@ -3986,18 +3887,18 @@ set y [winfo y ~a]
 (defun get-save-file (&key (filetypes '(("All Files" "*"))))
   (let ((files
         (with-output-to-string (s)
-          (format s "{")
+          (format s "[list ")
           (dolist (type filetypes)
             (let ((name (first type))
                   (wildcard (second type)))
-              (format s "{{~a} {~a}} " name wildcard)))
-          (format s "}"))))
+              (format s "[list ~/ltk:esc/ ~/ltk:esc/ ] " name wildcard)))
+          (format s " ]"))))
     (format-wish "senddatastring [tk_getSaveFile -filetypes ~a]" files)
     (read-data)))
 
 (defun choose-directory (&key (initialdir (namestring *default-pathname-defaults*))
 			      parent title mustexist)
-  (format-wish "senddatastring [tk_chooseDirectory ~@[ -initialdir \"~a\"~]~@[ -parent ~a ~]~@[ -title {~a}~]~@[ -mustexist ~a~]]" (tkescape2 initialdir) (and parent (widget-path parent)) title (and mustexist 1))
+  (format-wish "senddatastring [tk_chooseDirectory ~@[ -initialdir \"~a\"~]~@[ -parent ~a ~]~@[ -title ~/ltk:esc/~]~@[ -mustexist ~a~]]" (tkescape2 initialdir) (and parent (widget-path parent)) title (and mustexist 1))
   (read-data))
 
 (defvar *mb-icons* (list "error" "info" "question" "warning")
@@ -4006,7 +3907,7 @@ set y [winfo y ~a]
 ;;; see make-string-output-string/get-output-stream-string
 (defun message-box (message title type icon &key parent)
   ;;; tk_messageBox function
-  (format-wish "senddatastring [tk_messageBox -message \"~a\" -title {~a} -type ~(~a~) -icon ~(~a~)~@[ -parent ~a~]]" (tkescape2 message) title type icon (and parent (widget-path parent)))
+  (format-wish "senddatastring [tk_messageBox -message \"~a\" -title ~/ltk:esc/ -type ~(~a~) -icon ~(~a~)~@[ -parent ~a~]]" (tkescape2 message) title type icon (and parent (widget-path parent)))
   (read-keyword))
 
 
@@ -4072,7 +3973,7 @@ set y [winfo y ~a]
    (t
     (let* ((name (create-name)))
       (add-callback name (second tree))		     
-      (send-wish (format nil "~A add command -label {~A} -command {puts -nonewline  {(\"~A\")};flush $server}" widget-path (first tree) name))
+      (send-wish (format nil "~A add command -label ~/ltk:esc/ -command {puts -nonewline  {(\"~A\")};flush $server}" widget-path (first tree) name))
       ))))
 
 (defun create-menu2 (menutree)
@@ -5181,7 +5082,9 @@ tk input to terminate"
   (ignore-errors
     (format *error-output* "An error of has occured: ~%")
     (print-backtrace condition *error-output*)
-    #+sbcl (quit)
+    #+sbcl(#.(or
+	      (find-symbol "EXIT" :sb-ext)
+	      'sb-ext:quit))
     #+(or cmu scl) (ext:quit)))
 
 (defun debugger-test (debugger-class)
@@ -5354,6 +5257,27 @@ tk input to terminate"
     ,@(mapcar (lambda (w)
 		  `(configure ,w :cursor ""))
 		widgets)))
+
+(defun (setf ttk-state) (enable widget state)
+  (unless
+      (member state '(:active :disabled :focus :pressed :selected
+		      :background :readonly :alternate :invalid :hover))
+    (error "Invalid state ~A" state))
+  (format-wish "~a state ~:[!~;~]~a"
+	       (widget-path widget) enable
+	       (string-downcase (symbol-name state))))
+
+(defun ttk-state (widget state)
+  (unless
+      (member state '(:active :disabled :focus :pressed :selected
+		      :background :readonly :alternate :invalid :hover))
+    (cerror "Invalid state ~A" state))
+  (format-wish "senddatastring [~a state]" (widget-path widget))
+  (let ((states (split (read-data) '(#\Space))))
+    (member (string-downcase (symbol-name state))
+	    states
+	    :test #'string=)))
+
 
 (pushnew :ltk *features*)
 
